@@ -30,13 +30,19 @@ class Detector:
         self.min_string_len = min_string_len
 
     def detect(self, target_path: Path, instruction_path: Path | None = None) -> list[str]:
+        target_path = target_path.resolve()
+        if not target_path.is_file():
+            return []
+
         instruction_text = ""
         if instruction_path:
-            instruction_text = instruction_path.read_text(encoding="utf-8", errors="ignore")
+            instruction_path = instruction_path.resolve()
+            if instruction_path.is_file():
+                instruction_text = instruction_path.read_text(encoding="utf-8", errors="ignore")
 
         all_text = []
         all_text.extend(self._scan_path(target_path))
-        all_text.extend(self._scan_bytes(target_path.read_bytes(), source=target_path.name))
+        all_text.extend(self._scan_bytes(target_path.read_bytes(), _source=target_path.name))
         if instruction_text:
             all_text.append(instruction_text)
 
@@ -49,7 +55,7 @@ class Detector:
             return self._scan_tar(path)
         if suffix == ".png":
             return self._scan_png(path)
-        if suffix in {".wav"}:
+        if suffix == ".wav":
             return self._scan_wav(path)
         if suffix == ".rar":
             return self._scan_rar(path)
@@ -67,7 +73,7 @@ class Detector:
                     if not file_obj:
                         continue
                     payload = file_obj.read()
-                    out.extend(self._scan_bytes(payload, source=member.name))
+                    out.extend(self._scan_bytes(payload, _source=member.name))
                     out.extend(self._scan_bytes_for_format(member.name, payload))
         except (tarfile.TarError, OSError):
             pass
@@ -95,7 +101,7 @@ class Detector:
             if ctype in {b"tEXt", b"iTXt", b"zTXt"}:
                 out.append(chunk_data.decode("utf-8", errors="ignore"))
             else:
-                out.extend(self._scan_bytes(chunk_data, source=f"png:{ctype.decode('ascii', errors='ignore')}"))
+                out.extend(self._scan_bytes(chunk_data, _source=f"png:{ctype.decode('ascii', errors='ignore')}"))
 
             cursor = crc_end
             last_end = crc_end
@@ -103,7 +109,7 @@ class Detector:
                 break
 
         if last_end < len(data):
-            out.extend(self._scan_bytes(data[last_end:], source="png_trailing_bytes"))
+            out.extend(self._scan_bytes(data[last_end:], _source="png_trailing_bytes"))
         return out
 
     def _scan_wav(self, path: Path) -> list[str]:
@@ -111,15 +117,19 @@ class Detector:
         try:
             with wave.open(str(path), "rb") as wav:
                 frames = wav.readframes(wav.getnframes())
-            out.extend(self._scan_bytes(frames, source="wav_frames"))
+            out.extend(self._scan_bytes(frames, _source="wav_frames"))
             out.extend(self._decode_lsb_stream(frames))
         except (wave.Error, OSError):
             pass
         return out
 
     def _scan_rar(self, path: Path) -> list[str]:
+        path = path.resolve()
+        if not path.is_file():
+            return []
+
         out: list[str] = []
-        out.extend(self._scan_bytes(path.read_bytes(), source="rar_raw"))
+        out.extend(self._scan_bytes(path.read_bytes(), _source="rar_raw"))
 
         tool_cmds = [["unrar", "x", "-inul", str(path)], ["7z", "x", "-y", str(path)], ["bsdtar", "-xf", str(path)]]
         for cmd in tool_cmds:
@@ -130,6 +140,7 @@ class Detector:
                     proc = subprocess.run(
                         cmd,
                         cwd=tmpdir,
+                        shell=False,
                         check=False,
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE,
@@ -141,7 +152,7 @@ class Detector:
                         for f in files:
                             fp = Path(root) / f
                             payload = fp.read_bytes()
-                            out.extend(self._scan_bytes(payload, source=f"rar:{f}"))
+                            out.extend(self._scan_bytes(payload, _source=f"rar:{f}"))
                             out.extend(self._scan_bytes_for_format(f, payload))
                     return out
             except (OSError, subprocess.SubprocessError):
@@ -176,8 +187,7 @@ class Detector:
                 return self._scan_wav(Path(tmp.name))
         return []
 
-    def _scan_bytes(self, payload: bytes, source: str = "") -> list[str]:
-        del source
+    def _scan_bytes(self, payload: bytes, _source: str = "") -> list[str]:
         out: list[str] = []
         current = bytearray()
         for b in payload:
@@ -227,12 +237,12 @@ class Detector:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="CTF steganography flag detector")
-    parser.add_argument("target", type=Path, help="Challenge file (.png, .tar, .wav/audio, .rar, or other binary)")
+    parser.add_argument("target", type=Path, help="Challenge file (.png, .tar, .wav audio file, .rar, or other binary)")
     parser.add_argument(
         "-i",
         "--instructions",
         type=Path,
-        help="Optional challenge instruction file to improve flag pattern detection",
+        help="Optional challenge instruction text file to improve flag pattern detection",
     )
     args = parser.parse_args()
 

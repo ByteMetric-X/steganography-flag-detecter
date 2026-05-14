@@ -3,6 +3,7 @@ import struct
 import tarfile
 import tempfile
 import unittest
+import wave
 import zlib
 from pathlib import Path
 
@@ -53,8 +54,6 @@ class DetectorTests(unittest.TestCase):
             self.assertIn("CTF{TAR_SECRET}", flags)
 
     def test_detects_flag_from_wav_lsb(self):
-        import wave
-
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "challenge.wav"
             frames = _wav_lsb_payload("FLAG{WAV_LSB}")
