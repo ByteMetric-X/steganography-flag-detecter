@@ -1,4 +1,4 @@
-# stenography-flag-detecter
+# steganography flag detector
 
 A small CTF helper that scans challenge files and prints likely hidden flags/text.
 
