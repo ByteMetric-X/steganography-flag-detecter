@@ -5,6 +5,7 @@ import tempfile
 import unittest
 import wave
 import zlib
+import base64
 from pathlib import Path
 
 from detector import Detector
@@ -65,6 +66,32 @@ class DetectorTests(unittest.TestCase):
 
             flags = Detector().detect(path)
             self.assertIn("FLAG{WAV_LSB}", flags)
+
+    def test_detects_base64_encoded_flag_in_binary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "challenge.bin"
+            encoded = base64.b64encode(b"FLAG{B64_HIDDEN}")
+            path.write_bytes(b"noise " + encoded + b" more-noise")
+
+            flags = Detector().detect(path)
+            self.assertIn("FLAG{B64_HIDDEN}", flags)
+
+    def test_detects_hex_encoded_flag_in_binary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "challenge.bin"
+            encoded = b"4354467b4845585f5345435245547d"  # CTF{HEX_SECRET}
+            path.write_bytes(b"xx " + encoded + b" yy")
+
+            flags = Detector().detect(path)
+            self.assertIn("CTF{HEX_SECRET}", flags)
+
+    def test_detects_utf16le_flag_in_binary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "challenge.bin"
+            path.write_bytes("xxFLAG{UTF16_SECRET}yy".encode("utf-16le"))
+
+            flags = Detector().detect(path)
+            self.assertIn("FLAG{UTF16_SECRET}", flags)
 
 
 if __name__ == "__main__":

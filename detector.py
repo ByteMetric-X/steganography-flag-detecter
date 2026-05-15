@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import io
 import os
 import re
@@ -199,6 +201,13 @@ class Detector:
                 current = bytearray()
         if len(current) >= self.min_string_len:
             out.append(current.decode("utf-8", errors="ignore"))
+        for encoding in ("utf-16le", "utf-16be"):
+            try:
+                decoded = payload.decode(encoding, errors="ignore")
+            except (LookupError, UnicodeDecodeError):
+                continue
+            if re.search(r"(?i)(?:flag|ctf|[a-z0-9_\-]{2,32})\{", decoded):
+                out.append(decoded)
         return out
 
     def _extract_candidates(self, chunks: Iterable[str], instruction_text: str = "") -> list[str]:
@@ -208,13 +217,50 @@ class Detector:
         patterns.extend(custom)
 
         found: set[str] = set()
+        expanded_chunks: list[str] = []
         for chunk in chunks:
+            expanded_chunks.append(chunk)
+            expanded_chunks.extend(self._decode_common_encodings(chunk))
+
+        for chunk in expanded_chunks:
             for pattern in patterns:
                 for match in pattern.findall(chunk):
                     value = match.strip()
                     if len(value) >= 4:
                         found.add(value)
         return sorted(found)
+
+    def _decode_common_encodings(self, chunk: str) -> list[str]:
+        decoded_chunks: list[str] = []
+        max_len = 4096
+
+        # base64-like tokens
+        for token in re.findall(r"(?<![A-Za-z0-9+/=_-])[A-Za-z0-9+/=_-]{12,}(?![A-Za-z0-9+/=_-])", chunk)[:20]:
+            if len(token) > max_len:
+                continue
+            normalized = token.replace("-", "+").replace("_", "/")
+            normalized += "=" * ((4 - (len(normalized) % 4)) % 4)
+            try:
+                raw = base64.b64decode(normalized, validate=True)
+            except (binascii.Error, ValueError):
+                continue
+            text = raw.decode("utf-8", errors="ignore").strip()
+            if text:
+                decoded_chunks.append(text)
+
+        # hex-like tokens
+        for token in re.findall(r"(?<![0-9A-Fa-f])[0-9A-Fa-f]{8,}(?![0-9A-Fa-f])", chunk)[:20]:
+            if len(token) > max_len or len(token) % 2 != 0:
+                continue
+            try:
+                raw = bytes.fromhex(token)
+            except ValueError:
+                continue
+            text = raw.decode("utf-8", errors="ignore").strip()
+            if text:
+                decoded_chunks.append(text)
+
+        return decoded_chunks
 
     def _extract_custom_patterns(self, instruction_text: str) -> list[re.Pattern[str]]:
         patterns: list[re.Pattern[str]] = []
