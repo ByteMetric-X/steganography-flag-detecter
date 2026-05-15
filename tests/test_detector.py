@@ -93,6 +93,15 @@ class DetectorTests(unittest.TestCase):
             flags = Detector().detect(path)
             self.assertIn("FLAG{UTF16_SECRET}", flags)
 
+    def test_ignores_odd_length_hex_tokens(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "challenge.bin"
+            # Odd-length hex token should be ignored.
+            path.write_bytes(b"xx 4354467b4845585f5345435245547 yy")
+
+            flags = Detector().detect(path)
+            self.assertNotIn("CTF{HEX_SECRET}", flags)
+
 
 if __name__ == "__main__":
     unittest.main()

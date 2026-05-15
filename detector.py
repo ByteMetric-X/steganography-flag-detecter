@@ -249,19 +249,30 @@ class Detector:
     def _decode_common_encodings(self, chunk: str) -> list[str]:
         decoded_chunks: list[str] = []
 
-        # base64-like tokens
-        b64_tokens = itertools.chain(B64_STANDARD_TOKEN_RE.findall(chunk), B64_URLSAFE_TOKEN_RE.findall(chunk))
-        for token in itertools.islice(b64_tokens, MAX_DECODED_TOKENS_PER_CHUNK):
-            normalized = token.replace("-", "+").replace("_", "/")
+        def _append_base64(token: str, is_urlsafe: bool) -> None:
+            normalized = token.replace("-", "+").replace("_", "/") if is_urlsafe else token
             padding_needed = (4 - (len(normalized) % 4)) % 4
             normalized += "=" * padding_needed
             try:
                 raw = base64.b64decode(normalized, validate=True)
             except (binascii.Error, ValueError):
-                continue
+                return
             text = raw.decode("utf-8", errors="ignore").strip()
             if text:
                 decoded_chunks.append(text)
+
+        # base64-like tokens
+        processed_tokens = 0
+        for token in B64_STANDARD_TOKEN_RE.findall(chunk):
+            _append_base64(token, is_urlsafe=False)
+            processed_tokens += 1
+            if processed_tokens >= MAX_DECODED_TOKENS_PER_CHUNK:
+                return decoded_chunks
+        for token in B64_URLSAFE_TOKEN_RE.findall(chunk):
+            _append_base64(token, is_urlsafe=True)
+            processed_tokens += 1
+            if processed_tokens >= MAX_DECODED_TOKENS_PER_CHUNK:
+                return decoded_chunks
 
         # hex-like tokens
         for token in itertools.islice(HEX_TOKEN_RE.findall(chunk), MAX_DECODED_TOKENS_PER_CHUNK):
