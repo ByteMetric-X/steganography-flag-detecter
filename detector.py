@@ -236,16 +236,22 @@ class Detector:
 
     def _decode_common_encodings(self, chunk: str) -> list[str]:
         decoded_chunks: list[str] = []
+        standard_b64_pattern = re.compile(
+            rf"(?<![A-Za-z0-9+/=])[A-Za-z0-9+/=]{{{MIN_BASE64_TOKEN_LENGTH},{MAX_ENCODED_TOKEN_LENGTH}}}(?![A-Za-z0-9+/=])"
+        )
+        urlsafe_b64_pattern = re.compile(
+            rf"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{{{MIN_BASE64_TOKEN_LENGTH},{MAX_ENCODED_TOKEN_LENGTH}}}(?![A-Za-z0-9_-])"
+        )
+        hex_pattern = re.compile(
+            rf"(?<![0-9A-Fa-f])[0-9A-Fa-f]{{{MIN_HEX_TOKEN_LENGTH},{MAX_ENCODED_TOKEN_LENGTH}}}(?![0-9A-Fa-f])"
+        )
 
         # base64-like tokens
-        for token in re.findall(
-            rf"(?<![A-Za-z0-9+/=_-])[A-Za-z0-9+/=_-]{{{MIN_BASE64_TOKEN_LENGTH},}}(?![A-Za-z0-9+/=_-])",
-            chunk,
-        )[:MAX_DECODED_TOKENS_PER_CHUNK]:
-            if len(token) > MAX_ENCODED_TOKEN_LENGTH:
-                continue
+        b64_tokens = list(standard_b64_pattern.findall(chunk)) + list(urlsafe_b64_pattern.findall(chunk))
+        for token in b64_tokens[:MAX_DECODED_TOKENS_PER_CHUNK]:
             normalized = token.replace("-", "+").replace("_", "/")
-            normalized += "=" * ((4 - (len(normalized) % 4)) % 4)
+            padding_needed = (4 - (len(normalized) % 4)) % 4
+            normalized += "=" * padding_needed
             try:
                 raw = base64.b64decode(normalized, validate=True)
             except (binascii.Error, ValueError):
@@ -255,11 +261,8 @@ class Detector:
                 decoded_chunks.append(text)
 
         # hex-like tokens
-        for token in re.findall(
-            rf"(?<![0-9A-Fa-f])[0-9A-Fa-f]{{{MIN_HEX_TOKEN_LENGTH},}}(?![0-9A-Fa-f])",
-            chunk,
-        )[:MAX_DECODED_TOKENS_PER_CHUNK]:
-            if len(token) > MAX_ENCODED_TOKEN_LENGTH or len(token) % 2 != 0:
+        for token in hex_pattern.findall(chunk)[:MAX_DECODED_TOKENS_PER_CHUNK]:
+            if len(token) % 2 != 0:
                 continue
             try:
                 raw = bytes.fromhex(token)
