@@ -7,6 +7,7 @@ import argparse
 import base64
 import binascii
 import io
+import itertools
 import os
 import re
 import shutil
@@ -25,10 +26,21 @@ DEFAULT_FLAG_PATTERNS = [
     re.compile(r"(?i)ctf\{[^\r\n\}]{1,200}\}"),
     re.compile(r"(?i)[a-z0-9_\-]{2,32}\{[^\r\n\}]{1,200}\}"),
 ]
+# Minimum likely-meaningful token sizes for encoded text candidates.
 MIN_BASE64_TOKEN_LENGTH = 12
 MIN_HEX_TOKEN_LENGTH = 8
+# Per-chunk decode guardrails to control worst-case processing costs.
 MAX_DECODED_TOKENS_PER_CHUNK = 20
 MAX_ENCODED_TOKEN_LENGTH = 4096
+B64_STANDARD_TOKEN_RE = re.compile(
+    rf"(?<![A-Za-z0-9+/=])[A-Za-z0-9+/=]{{{MIN_BASE64_TOKEN_LENGTH},{MAX_ENCODED_TOKEN_LENGTH}}}(?![A-Za-z0-9+/=])"
+)
+B64_URLSAFE_TOKEN_RE = re.compile(
+    rf"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{{{MIN_BASE64_TOKEN_LENGTH},{MAX_ENCODED_TOKEN_LENGTH}}}(?![A-Za-z0-9_-])"
+)
+HEX_TOKEN_RE = re.compile(
+    rf"(?<![0-9A-Fa-f])[0-9A-Fa-f]{{{MIN_HEX_TOKEN_LENGTH},{MAX_ENCODED_TOKEN_LENGTH}}}(?![0-9A-Fa-f])"
+)
 
 
 class Detector:
@@ -236,19 +248,10 @@ class Detector:
 
     def _decode_common_encodings(self, chunk: str) -> list[str]:
         decoded_chunks: list[str] = []
-        standard_b64_pattern = re.compile(
-            rf"(?<![A-Za-z0-9+/=])[A-Za-z0-9+/=]{{{MIN_BASE64_TOKEN_LENGTH},{MAX_ENCODED_TOKEN_LENGTH}}}(?![A-Za-z0-9+/=])"
-        )
-        urlsafe_b64_pattern = re.compile(
-            rf"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{{{MIN_BASE64_TOKEN_LENGTH},{MAX_ENCODED_TOKEN_LENGTH}}}(?![A-Za-z0-9_-])"
-        )
-        hex_pattern = re.compile(
-            rf"(?<![0-9A-Fa-f])[0-9A-Fa-f]{{{MIN_HEX_TOKEN_LENGTH},{MAX_ENCODED_TOKEN_LENGTH}}}(?![0-9A-Fa-f])"
-        )
 
         # base64-like tokens
-        b64_tokens = list(standard_b64_pattern.findall(chunk)) + list(urlsafe_b64_pattern.findall(chunk))
-        for token in b64_tokens[:MAX_DECODED_TOKENS_PER_CHUNK]:
+        b64_tokens = itertools.chain(B64_STANDARD_TOKEN_RE.findall(chunk), B64_URLSAFE_TOKEN_RE.findall(chunk))
+        for token in itertools.islice(b64_tokens, MAX_DECODED_TOKENS_PER_CHUNK):
             normalized = token.replace("-", "+").replace("_", "/")
             padding_needed = (4 - (len(normalized) % 4)) % 4
             normalized += "=" * padding_needed
@@ -261,7 +264,7 @@ class Detector:
                 decoded_chunks.append(text)
 
         # hex-like tokens
-        for token in hex_pattern.findall(chunk)[:MAX_DECODED_TOKENS_PER_CHUNK]:
+        for token in itertools.islice(HEX_TOKEN_RE.findall(chunk), MAX_DECODED_TOKENS_PER_CHUNK):
             if len(token) % 2 != 0:
                 continue
             try:
