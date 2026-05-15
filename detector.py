@@ -25,6 +25,10 @@ DEFAULT_FLAG_PATTERNS = [
     re.compile(r"(?i)ctf\{[^\r\n\}]{1,200}\}"),
     re.compile(r"(?i)[a-z0-9_\-]{2,32}\{[^\r\n\}]{1,200}\}"),
 ]
+MIN_BASE64_TOKEN_LENGTH = 12
+MIN_HEX_TOKEN_LENGTH = 8
+MAX_DECODED_TOKENS_PER_CHUNK = 20
+MAX_ENCODED_TOKEN_LENGTH = 4096
 
 
 class Detector:
@@ -232,11 +236,13 @@ class Detector:
 
     def _decode_common_encodings(self, chunk: str) -> list[str]:
         decoded_chunks: list[str] = []
-        max_len = 4096
 
         # base64-like tokens
-        for token in re.findall(r"(?<![A-Za-z0-9+/=_-])[A-Za-z0-9+/=_-]{12,}(?![A-Za-z0-9+/=_-])", chunk)[:20]:
-            if len(token) > max_len:
+        for token in re.findall(
+            rf"(?<![A-Za-z0-9+/=_-])[A-Za-z0-9+/=_-]{{{MIN_BASE64_TOKEN_LENGTH},}}(?![A-Za-z0-9+/=_-])",
+            chunk,
+        )[:MAX_DECODED_TOKENS_PER_CHUNK]:
+            if len(token) > MAX_ENCODED_TOKEN_LENGTH:
                 continue
             normalized = token.replace("-", "+").replace("_", "/")
             normalized += "=" * ((4 - (len(normalized) % 4)) % 4)
@@ -249,8 +255,11 @@ class Detector:
                 decoded_chunks.append(text)
 
         # hex-like tokens
-        for token in re.findall(r"(?<![0-9A-Fa-f])[0-9A-Fa-f]{8,}(?![0-9A-Fa-f])", chunk)[:20]:
-            if len(token) > max_len or len(token) % 2 != 0:
+        for token in re.findall(
+            rf"(?<![0-9A-Fa-f])[0-9A-Fa-f]{{{MIN_HEX_TOKEN_LENGTH},}}(?![0-9A-Fa-f])",
+            chunk,
+        )[:MAX_DECODED_TOKENS_PER_CHUNK]:
+            if len(token) > MAX_ENCODED_TOKEN_LENGTH or len(token) % 2 != 0:
                 continue
             try:
                 raw = bytes.fromhex(token)
