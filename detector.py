@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import io
+import itertools
 import os
 import re
 import shutil
@@ -23,6 +26,21 @@ DEFAULT_FLAG_PATTERNS = [
     re.compile(r"(?i)ctf\{[^\r\n\}]{1,200}\}"),
     re.compile(r"(?i)[a-z0-9_\-]{2,32}\{[^\r\n\}]{1,200}\}"),
 ]
+# Minimum likely-meaningful token sizes for encoded text candidates.
+MIN_BASE64_TOKEN_LENGTH = 12
+MIN_HEX_TOKEN_LENGTH = 8
+# Per-chunk decode guardrails to control worst-case processing costs.
+MAX_DECODED_TOKENS_PER_CHUNK = 20
+MAX_ENCODED_TOKEN_LENGTH = 4096
+B64_STANDARD_TOKEN_RE = re.compile(
+    rf"(?<![A-Za-z0-9+/=])[A-Za-z0-9+/=]{{{MIN_BASE64_TOKEN_LENGTH},{MAX_ENCODED_TOKEN_LENGTH}}}(?![A-Za-z0-9+/=])"
+)
+B64_URLSAFE_TOKEN_RE = re.compile(
+    rf"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{{{MIN_BASE64_TOKEN_LENGTH},{MAX_ENCODED_TOKEN_LENGTH}}}(?![A-Za-z0-9_-])"
+)
+HEX_TOKEN_RE = re.compile(
+    rf"(?<![0-9A-Fa-f])[0-9A-Fa-f]{{{MIN_HEX_TOKEN_LENGTH},{MAX_ENCODED_TOKEN_LENGTH}}}(?![0-9A-Fa-f])"
+)
 
 
 class Detector:
@@ -199,6 +217,13 @@ class Detector:
                 current = bytearray()
         if len(current) >= self.min_string_len:
             out.append(current.decode("utf-8", errors="ignore"))
+        for encoding in ("utf-16le", "utf-16be"):
+            try:
+                decoded = payload.decode(encoding, errors="ignore")
+            except (LookupError, UnicodeDecodeError):
+                continue
+            if re.search(r"(?i)(?:flag|ctf|[a-z0-9_\-]{2,32})\{", decoded):
+                out.append(decoded)
         return out
 
     def _extract_candidates(self, chunks: Iterable[str], instruction_text: str = "") -> list[str]:
@@ -208,13 +233,60 @@ class Detector:
         patterns.extend(custom)
 
         found: set[str] = set()
+        expanded_chunks: list[str] = []
         for chunk in chunks:
+            expanded_chunks.append(chunk)
+            expanded_chunks.extend(self._decode_common_encodings(chunk))
+
+        for chunk in expanded_chunks:
             for pattern in patterns:
                 for match in pattern.findall(chunk):
                     value = match.strip()
                     if len(value) >= 4:
                         found.add(value)
         return sorted(found)
+
+    def _decode_common_encodings(self, chunk: str) -> list[str]:
+        decoded_chunks: list[str] = []
+
+        def _append_base64(token: str, is_urlsafe: bool) -> None:
+            normalized = token.replace("-", "+").replace("_", "/") if is_urlsafe else token
+            padding_needed = (4 - (len(normalized) % 4)) % 4
+            normalized += "=" * padding_needed
+            try:
+                raw = base64.b64decode(normalized, validate=True)
+            except (binascii.Error, ValueError):
+                return
+            text = raw.decode("utf-8", errors="ignore").strip()
+            if text:
+                decoded_chunks.append(text)
+
+        # base64-like tokens
+        processed_tokens = 0
+        for token in B64_STANDARD_TOKEN_RE.findall(chunk):
+            _append_base64(token, is_urlsafe=False)
+            processed_tokens += 1
+            if processed_tokens >= MAX_DECODED_TOKENS_PER_CHUNK:
+                return decoded_chunks
+        for token in B64_URLSAFE_TOKEN_RE.findall(chunk):
+            _append_base64(token, is_urlsafe=True)
+            processed_tokens += 1
+            if processed_tokens >= MAX_DECODED_TOKENS_PER_CHUNK:
+                return decoded_chunks
+
+        # hex-like tokens
+        for token in itertools.islice(HEX_TOKEN_RE.findall(chunk), MAX_DECODED_TOKENS_PER_CHUNK):
+            if len(token) % 2 != 0:
+                continue
+            try:
+                raw = bytes.fromhex(token)
+            except ValueError:
+                continue
+            text = raw.decode("utf-8", errors="ignore").strip()
+            if text:
+                decoded_chunks.append(text)
+
+        return decoded_chunks
 
     def _extract_custom_patterns(self, instruction_text: str) -> list[re.Pattern[str]]:
         patterns: list[re.Pattern[str]] = []
